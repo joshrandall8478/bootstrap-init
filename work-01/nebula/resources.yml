@@ -1,0 +1,11 @@
+---
+# List of networks to create
+# Nebula is not part of a Docker network.
+
+# List of volumes to create
+volumes:
+  # Nebula
+  - name: nebula-config
+    opts:
+      # The directory does not contain the nebula name.
+      device: nebula/config

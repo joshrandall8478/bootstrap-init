@@ -1,0 +1,28 @@
+---
+# Disable line length rule because Docker lines commonly exceed the line length.
+# yamllint disable rule:line-length
+
+services:
+
+  # https://hub.docker.com/r/nebulaoss/nebula
+  # https://github.com/slackhq/nebula/blob/master/docker/Dockerfile
+  nebula:
+    image: nebulaoss/nebula:1.9.5
+    command:
+      - '-config'
+      - '/config/nebula.yml'
+    # stdin_open: true
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      # The docs don't have this capability
+      # - SYS_ADMIN
+    # devices:
+      # - "/dev/net/tun:/dev/net/tun"
+    labels:
+      # Prefer key: value over yml lists with dashes to get the syntax highlight.
+      # Note: The "services" line is needed to prevent Traefik from using the Docker project as a prefix.
+      # Nebula creates its own network.
+      traefik.enable: false
+

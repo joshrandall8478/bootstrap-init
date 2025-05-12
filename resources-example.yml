@@ -1,0 +1,32 @@
+---
+# List of apps on this server.
+# Used in the app-[start|stop|restart]-all tasks
+apps:
+  - app1
+  - dir/app2
+
+# Resource default values
+default:
+  base:
+    # Base directory for volumes
+    dir: /srv/c1/client/server-01
+
+  # Default network options
+  # docker network create
+  #   --driver bridge
+  #   network-name
+  networks:
+    driver: bridge
+
+  # Default volume options
+  # docker volume create
+  #   --driver local
+  #   --opt type='none'
+  #   --opt o='bind'
+  #   --opt device=/path/to/volume
+  #   volume-name
+  volumes:
+    driver: local
+    opts:
+      type: none
+      o: bind

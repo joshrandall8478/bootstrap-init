@@ -1,0 +1,32 @@
+---
+# List of apps on this server.
+# Used in the app-[start|stop|restart]-all tasks
+apps:
+  - nebula
+  - syncthing
+
+# Resource default values
+default:
+  base:
+    # Base directory for volumes
+    dir: /srv/d1/niceguyit/data/
+
+  # Default network options
+  # docker network create
+  #   --driver bridge
+  #   network-name
+  networks:
+    driver: bridge
+
+  # Default volume options
+  # docker volume create
+  #   --driver local
+  #   --opt type='none'
+  #   --opt o='bind'
+  #   --opt device=/path/to/volume
+  #   volume-name
+  volumes:
+    driver: local
+    opts:
+      type: none
+      o: bind

@@ -1,0 +1,57 @@
+---
+# Disable line length rule because Docker lines commonly exceed the line length.
+# yamllint disable rule:line-length
+
+services:
+  syncthing:
+    # https://github.com/syncthing/syncthing/blob/main/README-Docker.md
+    # https://hub.docker.com/r/syncthing/syncthing
+    image: syncthing/syncthing:1.29.6
+    container_name: "niceguyit-syncthing"
+    restart: unless-stopped
+    # The default timeout is 10s inside the syncthing container.
+    # The command is "nc -z 127.0.0.1 8384 || exit 1" as seen by this PR.
+    # https://github.com/syncthing/syncthing/pull/6649/files
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8384"]
+      # Docker engine (v24) doesn't implement start_interval yet.
+      # https://github.com/moby/moby/issues/45897
+      # Until Docker engine (v25) supports start_interval, decrease the interval.
+      # Default is 1m30s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # start period provides initialization time for containers that need time to bootstrap. Probe failure
+      # during that period will not be counted towards the maximum number of retries. However, if a health
+      # check succeeds during the start period, the container is considered started and all consecutive failures
+      # will be counted towards the maximum number of retries.
+      start_period: 10s
+      # Docker engine (v24) doesn't implement start_interval yet.
+      # https://github.com/moby/moby/issues/45897
+      #start_interval: 2s
+    environment:
+      # UID=1000 is the default for the first user on openSUSE
+      - PUID=1000
+      # GID=100 is the default for the 'users' group openSUSE
+      - PGID=100
+    ports:
+      # The Web UI is served up through Traefik for regular deployments.
+      - target: 8384
+        published: 8384
+        protocol: "tcp"
+        mode: "bridge"
+      # TCP based sync protocol traffic
+      - target: 22000
+        published: 22000
+        protocol: "tcp"
+        mode: "host"
+      # QUIC based sync protocol traffic
+      - target: 22000
+        published: 22000
+        protocol: "udp"
+        mode: "host"
+      # Discovery broadcasts on IPv4 and multicasts on IPv6
+      - target: 21027
+        published: 21027
+        protocol: "udp"
+        mode: "host"

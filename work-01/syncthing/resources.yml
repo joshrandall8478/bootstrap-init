@@ -1,0 +1,12 @@
+---
+
+# List of networks to create
+#networks:
+#  - name: syncthing-private
+
+# List of volumes to create
+volumes:
+
+  - name: syncthing-data
+    opts:
+      device: syncthing

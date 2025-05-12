@@ -1,0 +1,8 @@
+---
+# This file is needed by the Simple SOPS Settings plugin to match the public key to the encrypted file.
+
+creation_rules:
+  # work-01
+  - path_regex: work-01\/.*\/?\.ya?ml
+    #age: age12gq0axp07j4wn0xdtcevnt29nxlrs88vqjw7rj9vm9gl3wcj34js7pc5gz
+    age: age1v252mr3ztzz97k8ker5mtzagdwrfr9mf0uudg9vlmk7skgc7nd6qd0xul3
