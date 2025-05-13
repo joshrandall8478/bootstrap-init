@@ -149,7 +149,7 @@ def 'volume create' [
 	let driver = $driver
 	let options = $options
 	# TODO: Incorporate the options and driver into the command line.
-	log debug $"Executing command: 'docker volume create --driver ($driver) --opt type=none --opt o=bind --opt \"device=($device)\" ($name)"
+	# log debug $"Executing command: 'docker volume create --driver ($driver) --opt type=none --opt o=bind --opt \"device=($device)\" ($name)"
 	^docker volume create --driver $driver --opt type=none --opt o=bind --opt $"device=($device)" $name | ignore
 }
 
@@ -190,7 +190,7 @@ def 'resources create' []: [any -> any] {
 		mut status = 'unknown'
 
 		if ($it.name | docker-json get --type $it.type | is-empty) {
-			log info $"Creating ($it.type): '($it.name)'"
+			# log info $"Creating ($it.type): '($it.name)'"
 
 			if ($it.type == "network") {
 				network create $it.name --driver $it.location
@@ -199,7 +199,7 @@ def 'resources create' []: [any -> any] {
 			}
 			$status = 'created'
 		} else {
-			log info $"($it.type) already exists: '($it.name)'"
+			# log info $"($it.type) already exists: '($it.name)'"
 			$status = 'exists'
 		}
 
@@ -223,7 +223,7 @@ def 'resources remove' []: [any -> any] {
 		mut status = 'unknown'
 
 		if ($it.name | docker-json get --type $it.type | is-not-empty) {
-			log info $"Removing ($it.type): '($it.name)'"
+			# log info $"Removing ($it.type): '($it.name)'"
 
 			if ($it.Type == "network") {
 				network remove $it.name

@@ -31,9 +31,9 @@ services:
       #start_interval: 2s
     environment:
       # UID=1000 is the default for the first user on openSUSE
-      - PUID=1000
+      - PUID=1003
       # GID=100 is the default for the 'users' group openSUSE
-      - PGID=100
+      - PGID=1005
     ports:
       # The Web UI is served up through Traefik for regular deployments.
       - target: 8384

@@ -1,5 +1,4 @@
 # This file is a collection of Nu functions used in the Justfile.
-
 # Find the directory name in the parent directories.
 export def find-dir [name: string]: [nothing -> string, nothing -> nothing] {
 	use std log
@@ -478,8 +477,8 @@ export def 'resources list' []: nothing -> nothing {
 # Create the Docker resources using resources.yml
 export def 'resources create' []: nothing -> nothing {
 	use docker-helpers.nu *
-	# TODO: Use "resources get" instead of passing in strings for arguments.
-	resources process | resources create
+	# Use "resources process" as input directly.
+	docker-helpers create
 }
 
 
@@ -487,5 +486,5 @@ export def 'resources create' []: nothing -> nothing {
 export def 'resources remove' []: nothing -> nothing {
 	use docker-helpers.nu *
 	# TODO: Use "resources get" instead of passing in strings for arguments.
-	resources process | resources remove
+	docker-helpers remove
 }
