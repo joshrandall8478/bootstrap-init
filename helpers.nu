@@ -1,47 +1,72 @@
-# This file is a collection of Nu functions used in the Justfile.
-# Find the directory name in the parent directories.
-export def find-dir [name: string]: [nothing -> string, nothing -> nothing] {
-	use std log
-	if ($name | is-empty) {
-		log error $"find-dir: '($name)' is not defined"
-		return ""
-	}
-	mut dir = $env.PWD
-	mut parent_dir = ($dir | path dirname)
-	mut count = 0
-	# Maximum number of iterations (directories) before exiting.
-	let max_count = 20
+################################################################################
+# This file is a collection of Nu functions called from the Justfile. The
+# justfile is a wrapper around these functions.
 
-	while ($parent_dir != $dir) {
-		if ($dir | path join $name | path exists) {
-			return ($dir | path join $name)
-		}
-		$dir = $parent_dir
-		$parent_dir = ($parent_dir | path dirname)
-		$count += 1
-		if ($count > $max_count) {
-			log warning $"find-dir: Maximum number of iterations reached"
-			return ""
-		}
+
+################################################################################
+# General functions
+################################################################################
+
+
+# Get a list of parent directories.
+export def "test path parents" []: [nothing -> list<path>, path -> list<path>] {
+	# Source: https://discord.com/channels/601130461678272522/601130461678272524/1373308546430799923
+	# This function is for learning how reduce works. It was provided by someone on Discord
+	# and it provides a list of directories as it traverses up the tree.
+	let pattern = "resources*"
+	$in
+	| default $env.PWD
+	| path split
+	| reduce -f [] {|element, acc|
+		print $"element: '($element)'; accumulator: '($acc)'"
+		$acc
+		| try { first }
+		| default ""
+		| path join $element
+		| append $acc
 	}
-	if ($parent_dir == $dir) {
-		# Did not find the directory
-		# Uncomment this for debugging purposes only
-		#log info $"find-dir: Did not find '($name)' directory before reaching the root of the drive."
-		return ""
-	} else {
-		# This is an error condition and should not be reached.
-		log error $"find-dir: Did not find '($name)' directory in loop, and did not reach root of drive."
-		return ""
-	}
+	# | each {|it|
+	# 	glob --depth 1 ($it | path join $pattern)
+	# }
+	# | flatten
 }
 
+# glob up: Recurse up the directory tree to find the named patterns.
+export def 'glup' [
+	pattern: string		# Glob pattern to find.
+	--kind: string		# "dir", "file", or "symlink"; Default: "" which means all
+]: [
+	path -> list<path>,
+	nothing -> list<path>,
+] {
+	# Input is expected to be a directory path.
+	$in
+	| default $env.PWD
+	| path split
+	| reduce -f [] {|element, acc|
+		# use std log
+		# log debug $"element: '($element)'; accumulator: '($acc)'"
+		$acc
+		| try { first }
+		| default ""
+		| path join $element
+		| append $acc
+	}
+	| each {|it|
+		match $kind {
+			"dir" => {glob --depth 1 --no-file --no-symlink ($it | path join $pattern)}
+			"file" => {glob --depth 1 --no-dir --no-symlink ($it | path join $pattern)}
+			"symlink" => {glob --depth 1 --no-file --no-dir ($it | path join $pattern)}
+			_ => {glob --depth 1 ($it | path join $pattern)}
+		}
+	}
+	| flatten
+}
 
 # Generate age keys in the given directory.
 export def age-genkeys [
 		age_dir: string = '.age' # directory to store the age keys
 ]: [nothing -> nothing, nothing -> string] {
-	use std log
 	let age_dir = $age_dir | path expand
 	let age_keys = $age_dir | path join 'keys.txt'
 
@@ -85,63 +110,259 @@ export def 'command exists' [
 }
 
 
-# Merge the secrets, variables and plain files to create the final config file.
-# Input: File prefix for the configuration to merge.
-export def 'config merge' []: string -> any {
+################################################################################
+# Docker functions
+################################################################################
+
+# Convert docker commands to json output.
+def 'docker-json' [
+	...args: string		# Docker arguments
+]: [nothing -> any] {
 	use std log
-	let prefix = $in
-	if ($prefix | is-empty) {
-		log error $"test merge: 'prefix' is not defined"
-		return
+	log debug $"Executing command: 'docker (echo ...$args | str join ' ') --format json'"
+	^docker ...$args --format json
+		| lines
+		| each {|it| $it | from json}
+}
+
+# Get a docker resource
+def 'docker-json get' [
+	--type (-t): string		# Resource type
+	name?: string			# Resource name
+]: [any -> any, nothing -> any] {
+	let input = $in
+	mut name = $name
+	if not ($input | is-empty) {
+		$name = $input
+	}
+	docker-json $type ls | where Name =~ $name
+}
+
+
+# Merge a default volume with an override volume to create a new volume
+def 'volume merge' [
+	override: any					# Merge override values
+]: [any -> any] {
+	let default = $in
+	mut override = $override
+	$override.opts = ($default.opts | merge $override.opts)
+	$default | merge $override
+}
+
+
+# Merge a default network with an override network to create a new network
+def 'network merge' [
+	override: any					# Merge override values
+]: [any -> any] {
+	let default = $in
+	let override = $override
+	$default | merge $override
+}
+
+
+# Create multiple docker networks
+def 'networks create' [
+	default: any					# Default network properties to use
+]: [any -> any] {
+	use std log
+	let $input = $in
+	if ($input | get --ignore-errors networks | length) == 0 {
+		log info $"Network list is empty"
+		return {}
 	}
 
-	let plain = (open (glob $"($prefix)-plain.*" | first))
-	let variables = (open (glob $"($prefix)-variables.*" | first))
+	$input | get --ignore-errors networks | each {|it|
+		if (docker-json network ls | where Name =~ $it.name | is-not-empty) {
+			log info $"Network already exists: ($it.name)"
+			return {type: network, action: none, name: $it.name}
+		}
+
+		log info $"Creating network: ($it.name)"
+		$default | network merge $it | each {|network|
+			let n = (^docker network create --driver $network.driver $network.name | str trim)
+			{type: network, action: created, name: $n}
+		}
+	}
+}
+
+
+# Create multiple docker volumes
+def 'volumes create' [
+	default: any					# Default volume properties to use
+	--base_dir: string				# Base data directory to prepend to relative paths
+]: [any -> any] {
+	use std log
+
+	let $input = $in
+	let base_dir = ($base_dir | path expand)
+	if not ($base_dir | path exists) {
+		log error $"Base path does not exist: '($base_dir)'"
+		return {}
+	}
+	if ($input | get --ignore-errors volumes | length) == 0 {
+		log info $"Volume list is empty"
+		return {}
+	}
+
+	$input | get --ignore-errors volumes | each {|it|
+		if (docker-json volume ls | where Name =~ $it.name | is-not-empty) {
+			log info $"Volume already exists: ($it.name)"
+			return {type: volume, action: none, name: $it.name}
+		}
+
+		log info $"Creating volume: ($it.name)"
+		mut volume = ($default | volume merge $it)
+		if not ($volume.opts.device | str starts-with '/') {
+			# Device is relative to default.base.dir
+			$volume.opts.device = ($base_dir | path join $volume.opts.device)
+		}
+		let $opts = ($volume.opts | items {|key, value| ["--opt" $"($key)=($value)"]} | flatten)
+		let v = (^docker volume create --driver $volume.driver ...$opts $volume.name | str trim)
+		{type: volume, action: created, name: $v}
+	}
+}
+
+
+# Create a docker network
+def 'network create' [
+	name: string					# Network name
+	--driver: string = 'bridge'		# Network driver
+] {
+	let name = $name
+	let driver = $driver
+	^docker network create --driver $driver $name | ignore
+}
+
+
+# Remove a docker network
+def 'network remove' [
+	name: string						# Network Name
+]: [any -> nothing, nothing -> nothing] {
+	let input = $in
+	mut name = $name
+	if not ($input | is-empty) {
+		$name = $input.Name
+	}
+	^docker network rm $name | ignore
+}
+
+
+# Create a docker volume
+def 'volume create' [
+	name: string					# volume name
+	--device: string				# Device location
+	--options: any					# Volume options
+	--driver: string = 'local'		# Volume driver
+] {
+	use std log
+	let name = $name
+	let device = $device
+	let driver = $driver
+	let options = $options
+	# TODO: Incorporate the options and driver into the command line.
+	log debug $"Executing command: 'docker volume create --driver ($driver) --opt type=none --opt o=bind --opt \"device=($device)\" ($name)"
+	^docker volume create --driver $driver --opt type=none --opt o=bind --opt $"device=($device)" $name | ignore
+}
+
+
+# Remove a docker volume
+def 'volume remove' [
+	name: string						# Volume Name
+]: [any -> nothing, nothing -> nothing] {
+	let input = $in
+	mut name = $name
+	if not ($input | is-empty) {
+		$name = $input.Name
+	}
+	^docker volume rm $name | ignore
+}
+
+
+################################################################################
+# Config and app functions
+################################################################################
+
+# Merge the secrets, variables and plain files to create the final config file.
+# Input: File prefix for the configuration to merge.
+export def 'config merge' [
+	app_name?: string		# Application name
+]: string -> any {
+	use std log
+
+	# Prefix: One of the following:
+	#    - "compose" which generates the Docker compose file.
+	#    - The application name for the configuration file. For example: prometheus
+	# app_name: The application name for the template. This is different for the compose "prefix".
+	# Templates are in $env.TEMPLATE_DIR/app_name/prefix.yml format.
+	let prefix = $in
+	log info $"config merge| prefix: '($prefix)'"
+
 	# SOPS does not encrypt files with comments only and produces an empty file.
 	let secrets = (
-		glob $"($prefix)-secrets.*"
-		| first
-		| each {|it|
-			if (ls $it | get size | first | into int) > 0 {
-				sops --decrypt (glob $"($prefix)-secrets.*" | first) | from yaml
-			}
+		try {
+			glob --no-dir --depth 1 $"($prefix)-secrets.*"
+			| first
+			| open --raw
+			# TODO: Implement file type detection
+			| sops --input-type yaml --output-type yaml --decrypt /dev/stdin
+			| from yaml
+		} catch {
+			{}
 		}
 	)
-	# The template comes first, then the variables, then the secrets
-	# The strategy might change in the future.
-	mut config = $plain
-	if ($variables | is-not-empty) {
-		log debug $"No variables found for '($prefix)'"
-		$config = ($config | merge deep --strategy append $variables)
+	# log info $"config merge| secrets: ($secrets)"
+
+	# Load the resources.
+	let resources = ($env.PWD | resources get)
+
+	# app_name is the application name for the template.
+	let app_name = ($resources.app.name)
+
+	# Merge the config files into a single config file. Since the strategy is "append",
+	# keys should not overlap.
+	#   1) The template should be the same for all servers.
+	#   2) The plain file is server specific configurations but no variables.
+	#   3) The variables file contains all the variables but not secrets.
+	#   4) The secrets file contains the secrets.
+	# There are times when a server may need a different "template". That's the purpose of the plain file.
+	[
+		(glob --no-dir --depth 1 ([$env.TEMPLATE_DIR, $app_name] | path join $"($prefix).*"))
+		(glob --no-dir --depth 1 $"($prefix)-plain.*")
+		(glob --no-dir --depth 1 $"($prefix)-variables.*")
+	]
+	| flatten
+	| filter { path exists }
+	| reduce -f {} {|element, acc|
+		use std log
+		log info $"element: '($element)'; accumulator: '($acc)'"
+		$acc
+		| merge deep --strategy append (open $element)
 	}
-	if ($secrets | is-not-empty) {
-		log debug $"No secrets found for '($prefix)'"
-		$config = ($config | merge deep --strategy append $secrets)
-	}
-	$config
+	| merge deep --strategy append $secrets
 }
 
 
 # Start the application
 export def 'app start' []: nothing -> any {
-	use std log
 	let prefix = "compose"
-	$prefix | config merge | to yaml | docker compose --file - up --detach
+	let app_name: string = (pwd | path basename)
+	# ! For debugging purposes only
+	# $prefix | config merge --app_name $app_name | to yaml | cat
+	$prefix | config merge $app_name | to yaml | docker compose --file - up --detach
 }
 
 
 # Stop the application
 export def 'app stop' []: nothing -> any {
-	use std log
 	let prefix = "compose"
-	$prefix | config merge | to yaml | docker compose --file - down
+	let app_name: string = (pwd | path basename)
+	$prefix | config merge $app_name | to yaml | docker compose --file - down
 }
 
 
 # Start all applications
 export def 'app start all' []: nothing -> nothing {
 	use std log
-
 	let resource_file = "resources.yml"
 	if not ($resource_file | path exists) {
 		log warning $"Resource file '($resource_file)' does not exist"
@@ -149,6 +370,7 @@ export def 'app start all' []: nothing -> nothing {
 	let resources = open $resource_file
 
 	$resources.apps | each {|it|
+		log info $"Starting application: '($it)'"
 		if not ($it | path exists) {
 			log warning $"Path '($resource_file)' does not exist"
 			continue
@@ -162,7 +384,6 @@ export def 'app start all' []: nothing -> nothing {
 
 # Stop all applications
 export def 'app stop all' []: nothing -> nothing {
-	use std log
 
 	let resource_file = "resources.yml"
 	if not ($resource_file | path exists) {
@@ -184,7 +405,6 @@ export def 'app stop all' []: nothing -> nothing {
 
 # Restart all applications
 export def 'app restart all' []: nothing -> nothing {
-	use std log
 
 	let resource_file = "resources.yml"
 	if not ($resource_file | path exists) {
@@ -210,13 +430,12 @@ export def 'app build helper' [
 	--environment: string			# (default=prod) prod or dev environment
 	--image_name: string			# Name of the Docker image to build.
 ]: string -> nothing {
-	use std log
 	let input = $in
-	let resources = ($input | resources get)
+	let resources = ($input | default $env.PWD | resources get)
 
-	let config = ($resources.app_name | config merge)
+	let config = ($resources.app.name | config merge)
 	let config_dir = ($resources.volumes | where name =~ "config" | get opts.device.0)
-	let config_file = ($config_dir | path join $"($resources.app_name).yml")
+	let config_file = ($config_dir | path join $"($resources.app.name).yml")
 
 	let environment = ($environment | default 'prod')
 	let image_name = (
@@ -278,12 +497,10 @@ export def 'app config update prometheus' [
 	## Prometheus
 	##
 	use std log
-	let input = $in
-	let resources = ($input | resources get)
-	let config = ($resources.app_name | config merge)
-	let config = ($resources.app_name | config merge)
+	let resources = ($in | default $env.PWD | resources get)
+	let config = ($resources.app.name | config merge)
 	let config_dir = ($resources.volumes | where name =~ "config" | get opts.device.0)
-	let config_file = ($config_dir | path join $"($resources.app_name).yml")
+	let config_file = ($config_dir | path join $"($resources.app.name).yml")
 
 	log info "Updating the alert rules..."
 	# FiXME: This does not delete files that were deleted in the source dir.
@@ -310,12 +527,11 @@ export def 'app config update prometheus' [
 # Update the application configuration.
 export def 'app config update' []: string -> string {
 	use std log
-	let input = $in
-	let resources = ($input | resources get)
+	let resources = ($in | default $env.PWD | resources get)
 
-	let config = ($resources.app_name | config merge)
+	let config = ($resources.app.name | config merge)
 	let config_dir = ($resources.volumes | where name =~ "config" | get opts.device.0)
-	let config_file = ($config_dir | path join $"($resources.app_name).yml")
+	let config_file = ($config_dir | path join $"($resources.app.name).yml")
 	log debug $"config_dir: ($config_dir)"
 	log debug $"config_file: ($config_file)"
 
@@ -334,7 +550,6 @@ export def 'app config update helper' [
 	--app_config: string			# Path to the application config in the current directory.
 	--save_file: string				# (default=stdout) Full path to save the generated config file
 ]: nothing -> nothing {
-	use std log
 	let save_file = ($save_file | default '-')
 	let app_cfg = ($app_config | default '')
 	let cfg = 'cfg-app.sops.yml'
@@ -366,18 +581,16 @@ export def 'app config update helper' [
 
 
 # Get the application config
-export def 'app config get' []: string -> any {
+export def 'app config get' []: [
+	nothing -> record<any>,
+	string -> record<any>,
+] {
 	use std log
-	let input = $in
-	let resources = ($input | resources get)
-
-	let config = ($resources.app_name | config merge)
-	log info $"Resources name: ($resources.app_name)"
-	$config
-	# let config_dir = ($resources.volumes | where name =~ "config" | get opts.device.0)
-	# let config_file = ($config_dir | path join $"($resources.app_name).yml")
-	# log info $"config_dir: ($config_dir)"
-	# log info $"config_file: ($config_file)"
+	let resources = ($in | default ($env.PWD | path basename) | resources get)
+	# log info $"app config get| resources: ($resources)"
+	# print $resources | table --width 200
+	log info $"app config get| resources.app.name: ($resources.app.name)"
+	$resources.app.name | config merge $resources.app.name
 }
 
 
@@ -409,41 +622,101 @@ export def 'app config helper' [
 # Dump the Docker config. Used for troubleshooting.
 export def 'docker config get' []: nothing -> nothing {
 	use std log
-	# let input = $in
-	# let resources = ($input | resources get)
-
-	let config = ("compose" | config merge)
+	let resources = ($in | default $env.PWD | resources get)
+	let config = ("compose" | config merge $resources.app.name)
 	log info $"Resources name: 'compose'"
 	$config
 }
 
+# Get a list of parent directories.
+export def "test resources get" []: [nothing -> list<path>, path -> list<path>] {
+	# Source: https://discord.com/channels/601130461678272522/601130461678272524/1373308546430799923
+	# This function is for learning how reduce works. It was provided by someone on Discord
+	# and it provides a list of directories as it traverses up the tree.
+	let pattern = "resources*"
+	$in
+	| default $env.PWD
+	| path split
+	| reduce -f [] {|element, acc|
+		print $"element: '($element)'; accumulator: '($acc)'"
+		$acc
+		| try { first }
+		| default ""
+		| path join $element
+		| append $acc
+	}
+	# | each {|it|
+	# 	glob --depth 1 ($it | path join $pattern)
+	# }
+	# | flatten
+}
+
+
+################################################################################
+# Resource functions
+################################################################################
+
+# Get the details of a docker resource
+def 'resource get details' [
+	name?: string	# Resource name
+]: [any -> any, nothing -> any] {
+	# TODO: Is this used?
+	use std log
+	let input = $in
+	mut name = $name
+	if not ($input | is-empty) {
+		$name = $input.ID.0
+	}
+
+	log debug $"Getting details for resource '($name)'"
+	docker-json inspect $name | from json
+}
 
 # Get the application resources.
 export def 'resources get' []: [
-	nothing -> any
-	any -> any
+	path -> record<any>,
+	nothing -> record<any>,
 ] {
+	# This function adds an "app" key to the resource configuration record. The resource configuration
+	# is based on the app, server and defaults defined in "resources.yml" files.
 	use std log
-	# Application resources are in the current directory.
-	# Server resources are in the parent directory.
-	# Input is the full directory name.
-	let input = $in
-	let base_path = (if ($input | is-not-empty) { $input | path expand} else { pwd })
-	# The directory name is the config directory name.
-	let name = ($base_path | path basename)
-	let defaults_file = ([$base_path, ".."] | path join "resources.yml")
-	let resources_file = ($base_path | path join "resources.yml")
-	let defaults = (if ($defaults_file | path exists) { open $defaults_file})
-	let resources = (if ($resources_file | path exists) { open $resources_file})
+
+	# Capture the input.
+	let path = $in
+
+	# Glup traverses up the directory tree and returns a list of files for the given pattern.
+	# Reduce opens each file and appends it to a record that is eventually returned.
+	let resources = (
+		glup "resources.yml"
+		| reverse
+		| reduce -f {} {|element, acc|
+			# use std log
+			# log info $"resources get| element: '($element)'; accumulator: '($acc)'"
+			$acc
+			| merge deep --strategy append (open $element)
+		}
+	)
+
+	# The application name is determined by the following:
+	#   1. app_name in the resources.yml file, if it exists.
+	#   2. The current working directory.
+	let app_name = (
+		if ("app_name" in $resources) {
+			$resources.app_name
+		} else {
+			$path | default $env.PWD | path basename
+		}
+	)
+	log info $"resources get| app_name: '($app_name)'"
 
 	let volumes = (
 		$resources.volumes? | each {|it|
 			if ($it | is-not-empty) {
-				let path = ([$defaults.default.base.dir, $name] | path join $it.opts.device)
+				let path = ([$resources.default.base.dir, $app_name] | path join $it.opts.device)
 				{
 					name: $it.name
-					driver: $defaults.default.volumes.driver
-					opts: ($defaults.default.volumes.opts | insert device $path)
+					driver: $resources.default.volume.driver
+					opts: ($resources.default.volume.opts | insert device $path)
 				}
 			}
 		}
@@ -453,38 +726,242 @@ export def 'resources get' []: [
 			if ($it | is-not-empty) {
 				{
 					name: $it.name
-					driver: $defaults.default.networks.driver
+					driver: $resources.default.network.driver
 				}
 			}
 		}
 	)
-	{
-		app_name: $name
-		volumes: $volumes
-		networks: $networks
+
+	$resources | merge {
+		app: {
+			name: $app_name,
+			volumes: $volumes,
+			networks: $volumes,
+		}
+	}
+}
+
+# Create the docker resources
+export def 'resources create' []: [any -> any] {
+	use std log
+	resources process
+	| each {|it|
+		mut status = 'unknown'
+		log info $"resources create| record: '($it)'"
+
+		# # ? Maybe convert this to use match
+		# match ($it.name | docker-json get --type $it.type) {
+		# 	"network" => {
+
+		# 	}
+		# 	"volume" => {
+				
+		# 	}
+		# 	_ => {
+		# 		log error $"resources create| Unknown resource type: '($it.type)'"
+		# 		# return
+		# 	}
+		# }
+		if ($it.name | docker-json get --type $it.type | is-empty) {
+			log info $"resources create| Creating ($it.type): '($it.name)'"
+
+			if ($it.type == "network") {
+				network create $it.name --driver $it.location
+			} else if ($it.type == "volume") {
+				volume create $it.name --device $it.location
+			}
+
+			if ($it.name | docker-json get --type $it.type | is-not-empty) {
+				$status = 'created'	
+			} else {
+				$status = 'missing'
+			}
+			
+		} else {
+			log info $"resources create| ($it.type) already exists: '($it.name)'"
+			$status = 'exists'
+		}
+
+		# This outputs the resource information as a record.
+		{
+			App: $it.app
+			Type: $it.type
+			Name: $it.name
+			Status: $status
+			Location: $it.location
+		}
 	}
 }
 
 
-# List the Docker resources specified in resources.yml
-export def 'resources list' []: nothing -> nothing {
-	use docker-helpers.nu *
-	# TODO: Use "resources get" instead of passing in strings for arguments.
+# Create all Docker resources for a server.
+export def 'resources create all' []: [any -> any] {
+	use std log
+	# The try/catch hides the actual error. Not catching it is better.
+	# try {
+		"resources.yml"
+		| open
+		| get apps
+		| filter { path exists }
+		| each {|app|
+			cd $app
+			log info $"Creating resources for app: '($app)'"
+			resources create
+		}
+		| flatten
+	# } catch {|err|
+	# 	use log
+	# 	log error $"Error: ($err.msg)"
+	# }
+}
+
+
+# Remove the Docker resources for an application.
+export def 'resources remove' []: [any -> any] {
+	use std log
 	resources process
+	| each {|it|
+		mut status = 'unknown'
+		log info $"resources remove| record: '($it)'"
+
+		if ($it.name | docker-json get --type $it.type | is-not-empty) {
+			log info $"resources remove| Removing ($it.type): '($it.name)'"
+
+			if ($it.Type == "network") {
+				network remove $it.name
+				
+			} else if ($it.Type == "volume") {
+				volume remove $it.name
+				
+			}
+			if ($it.name | docker-json get --type $it.type | is-empty) {
+					$status = 'removed'	
+			} else {
+				$status = 'exists'
+			}
+			
+		} else {
+			log info $"resources remove| ($it.type) does not exist: '($it.name)'"
+			$status = 'missing'
+		}
+
+		{
+			App: $it.app
+			Type: $it.type
+			Name: $it.name
+			Status: $status
+			Location: $it.location
+		}
+	}
 }
 
 
-# Create the Docker resources using resources.yml
-export def 'resources create' []: nothing -> nothing {
-	use docker-helpers.nu *
-	# Use "resources process" as input directly.
-	docker-helpers create
+# Remove all Docker resources for all apps in a server.
+export def 'resources remove all' []: [any -> any] {
+	use std log
+	# The try/catch hides the actual error. Not catching it is better.
+	# try {
+		"resources.yml"
+		| open
+		| get apps
+		| filter { path exists }
+		| each {|app|
+			cd $app
+			log info $"Removing resources for app: '($app)'"
+			resources remove
+		}
+		| flatten
+	# } catch {|err|
+	# 	use log
+	# 	log error $"Error: ($err.msg)"
+	# }
 }
 
 
-# Remove the Docker resources using resources.yml
-export def 'resources remove' []: nothing -> nothing {
-	use docker-helpers.nu *
-	# TODO: Use "resources get" instead of passing in strings for arguments.
-	docker-helpers remove
+# Process the resource configuration and return a list of network and volume resources.
+export def 'resources process' []: [
+	path -> table<any>,
+	nothing -> table<any>,
+] {
+	# This function outputs the application resource for Docker, including the status if
+	# they exist in Docker.
+	use std log
+	let resources = ($in | default $env.PWD | resources get)
+
+	let network_list = (
+		# Extract the network resources
+		if ("networks" in $resources) {
+			let net_driver = $resources.default.networks.driver
+			$resources.networks | each {|it|
+				mut status = 'missing'
+				mut location = $net_driver
+				let network = ($it.name | docker-json get --type network)
+				if ($network | is-empty) {
+					log info $"Network does not exist: '($it.name)'"
+					$status = 'missing'
+				} else {
+					log info $"Network exists: '($it.name)'"
+					$status = 'exists'
+				}
+				{
+					App: $resources.app.name
+					Type: 'network'
+					Name: $it.name
+					Status: $status
+					Location: $location
+					Args: ['--driver', $location]
+				}
+			}
+		}
+	)
+
+	let volume_list = (
+		# Extract the volume resources
+		if ("volumes" in $resources) {
+			let vol_driver = $resources.default.volumes.driver
+			let vol_opts = $resources.default.volumes.opts
+			let base_dir  = $resources.default.base.dir
+			
+			$resources.volumes | each {|it|
+				mut status = 'missing'
+				mut location = ''
+				mut driver = $vol_driver
+				mut opts = $vol_opts
+				
+				let volume = ($it.name | docker-json get --type volume)
+				if ($volume | is-empty) {
+					log info $"Volume does not exist: '($it.name)'"
+					$status = 'missing'
+				} else {
+					log info $"Volume exists: '($it.name)'"
+					$status = 'exists'
+				}
+
+				if ($it.opts.device | str starts-with '/') {
+					# Device is absolute path
+					$location = $it.opts.device
+				} else {
+					# Device is relative to defaults.base.dir
+					$location = ($base_dir | path join $it.opts.device)
+				}
+
+				{
+					App: $resources.app.name
+					Type: 'volume'
+					Name: $it.name
+					Status: $status
+					Location: $location
+					Args: ['--driver', $driver, '--opt', $opts]
+				}
+			}
+		}
+	)
+
+	$network_list | append $volume_list
+}
+
+
+# List the Docker resources specified in resources.yml. This is an alias of "resources process".
+export def 'resources list' []: nothing -> any {
+	resources process
 }
